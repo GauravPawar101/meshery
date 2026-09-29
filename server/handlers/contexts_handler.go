@@ -86,9 +86,23 @@ func (h *Handler) DeleteContext(w http.ResponseWriter, req *http.Request, _ *mod
 	smInstanceTracker := h.ConnectionToStateMachineInstanceTracker
 	k8scontext, err := provider.GetK8sContext(token, contextID)
 	if err != nil {
-		eventBuilder.WithSeverity(events.Error).WithDescription(fmt.Sprintf("Failed to delete connection for %s", k8scontext.Name)).WithMetadata(map[string]interface{}{
-			"error": err,
-		})
+		meshkitErr := ErrGetK8sContexts(err)
+		h.log.Error(meshkitErr)
+
+		// Client-safe error: fixed string that doesn't include provider's error text
+		safeErr := ErrGetK8sContexts(fmt.Errorf("unable to fetch kubernetes context"))
+
+		//Separate error Event
+		errEvent := eventBuilder.
+			WithSeverity(events.Error).
+			WithDescription(fmt.Sprintf("Failed to delete connection for context %s: unable to fetch context", contextID)).
+			WithMetadata(map[string]interface{}{"error": safeErr}).
+			Build()
+		_ = provider.PersistEvent(*errEvent, token)
+		go h.config.EventBroadcaster.Publish(userID, errEvent)
+
+		writeMeshkitError(w, safeErr, http.StatusInternalServerError)
+		return
 	}
 
 	description := fmt.Sprintf("Delete request received for kubernetes context \"%s\"", k8scontext.Name)
